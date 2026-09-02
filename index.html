@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Pages.dev Redirect</title>
-    <meta name="description" content="짧은 주소로 원하는 pages.dev 사이트에 이동합니다.">
+    <meta name="description" content="짧거나 인코딩된 주소로 원하는 사이트에 이동합니다.">
     <meta property="og:type" content="website">
     <meta property="og:title" content="Pages.dev Redirect">
     <meta property="og:description" content="?red=사이트이름 형식으로 원하는 pages.dev 사이트에 이동하세요.">
@@ -17,9 +17,78 @@
     <meta name="twitter:description" content="?red=사이트이름 형식으로 원하는 pages.dev 사이트에 이동하세요.">
     <meta name="twitter:image" content="https://amenorica.github.io/pages-redirect/preview.png">
     <script>
-      const value = new URLSearchParams(location.search).get('red');
-      if (value && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value)) {
-        location.replace(`https://${value}.pages.dev/`);
+      const params = new URLSearchParams(location.search);
+
+      function showError(message) {
+        function render() {
+          const error = document.querySelector('#error');
+          error.textContent = message;
+          error.hidden = false;
+        }
+
+        if (document.readyState === 'loading') {
+          addEventListener('DOMContentLoaded', render, { once: true });
+        } else {
+          render();
+        }
+      }
+
+      function decodeBase64Url(value) {
+        if (!value || !/^[A-Za-z0-9_-]+$/.test(value)) {
+          throw new Error('올바른 URL-safe Base64 값이 아닙니다.');
+        }
+
+        const padding = '='.repeat((4 - value.length % 4) % 4);
+        const binary = atob(value.replace(/-/g, '+').replace(/_/g, '/') + padding);
+        return Uint8Array.from(binary, character => character.charCodeAt(0));
+      }
+
+      async function decompressUrl(value) {
+        if (typeof DecompressionStream === 'undefined') {
+          throw new Error('이 브라우저는 압축된 주소를 지원하지 않습니다.');
+        }
+
+        const stream = new Blob([decodeBase64Url(value)])
+          .stream()
+          .pipeThrough(new DecompressionStream('gzip'));
+        const reader = stream.getReader();
+        const decoder = new TextDecoder('utf-8', { fatal: true });
+        let result = '';
+        let size = 0;
+
+        while (true) {
+          const { value: chunk, done } = await reader.read();
+          if (done) break;
+          size += chunk.byteLength;
+          if (size > 8192) {
+            await reader.cancel();
+            throw new Error('복원된 주소가 너무 깁니다.');
+          }
+          result += decoder.decode(chunk, { stream: true });
+        }
+
+        return result + decoder.decode();
+      }
+
+      async function redirectEncoded(value) {
+        try {
+          const target = new URL(await decompressUrl(value));
+          if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+            throw new Error('HTTP 또는 HTTPS 주소만 사용할 수 있습니다.');
+          }
+          location.replace(target.href);
+        } catch (error) {
+          showError(error instanceof Error ? error.message : '주소를 복원하지 못했습니다.');
+        }
+      }
+
+      if (params.has('enc')) {
+        redirectEncoded(params.get('enc'));
+      } else {
+        const value = params.get('red');
+        if (value && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value)) {
+          location.replace(`https://${value}.pages.dev/`);
+        }
       }
     </script>
     <style>
@@ -28,6 +97,7 @@
       main { width: min(32rem, calc(100% - 3rem)); }
       code { padding: .2rem .4rem; border-radius: .35rem; background: color-mix(in srgb, currentColor 10%, transparent); }
       p { line-height: 1.65; }
+      #error { color: #d33; }
     </style>
   </head>
   <body>
@@ -35,6 +105,8 @@
       <h1>Pages.dev Redirect</h1>
       <p><code>?red=asdf</code>를 주소 뒤에 붙이면 <code>https://asdf.pages.dev/</code>로 이동합니다.</p>
       <p>사이트 이름에는 영문 소문자, 숫자, 하이픈만 사용할 수 있습니다.</p>
+      <p><code>?enc=...</code>를 붙이면 gzip 압축 후 URL-safe Base64로 인코딩된 주소로 이동합니다.</p>
+      <p id="error" role="alert" hidden></p>
     </main>
   </body>
 </html>
